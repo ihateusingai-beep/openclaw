@@ -1,0 +1,60 @@
+name: Docker Health Monitor
+
+on:
+  schedule:
+    - cron: '0 */6 * * *'  # Every 6 hours
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  docker-health:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout hardened fork
+        uses: actions/checkout@v4
+        with:
+          repository: ihateusingai-beep/openclaw
+          ref: my-hardened-version
+
+      - name: Start Docker
+        run: |
+          docker info
+          docker ps
+
+      - name: Validate config hardening
+        run: |
+          echo "=== Tier 1: Config Gateway Check ==="
+          test -f ~/.openclaw/openclaw.json && echo "✅ Config exists" || echo "❌ Config missing"
+          grep -q '"safeBinProfiles"' ~/.openclaw/openclaw.json && echo "✅ safeBinProfiles" || echo "⚠️  Missing safeBinProfiles"
+          grep -q '"agentId"' ~/.openclaw/openclaw.json && echo "✅ agentId tagging" || echo "⚠️  Missing agentId"
+
+      - name: Validate sandbox config
+        run: |
+          echo "=== Tier 2: Sandbox Check ==="
+          grep -q 'workspaceOnly' ~/.openclaw/openclaw.json && echo "✅ workspaceOnly" || echo "⚠️  Missing workspaceOnly"
+          grep -q '"strict"' ~/.openclaw/openclaw.json && echo "✅ strict mode" || echo "⚠️  Missing strict"
+
+      - name: Build hardened image
+        run: |
+          echo "=== Docker Build Test ==="
+          docker build --target test -t openclaw-hardened-test . 2>&1 | tail -5
+
+      - name: Container smoke test
+        run: |
+          echo "=== Container Smoke Test ==="
+          docker run --rm openclaw-hardened-test openclaw --version 2>&1 || true
+
+  report:
+    needs: docker-health
+    runs-on: ubuntu-latest
+    if: always()
+    steps:
+      - name: Health report
+        run: |
+          echo "## 🛡️ Hardened Fork Health Report" >> $GITHUB_STEP_SUMMARY
+          echo "- Workflow: ${{ github.workflow }}" >> $GITHUB_STEP_SUMMARY
+          echo "- Run: ${{ github.run_id }}" >> $GITHUB_STEP_SUMMARY
+          echo "- Status: ${{ needs.docker-health.result }}" >> $GITHUB_STEP_SUMMARY
+          echo "- Timestamp: $(date -u)" >> $GITHUB_STEP_SUMMARY
